@@ -8,12 +8,14 @@ const MessageSchema = new Schema<IChatMessage>({
   timestamp: { type: String, required: true },
 });
 
+
+
 const ChatHistorySchema = new Schema<IChatHistory>(
   {
     userId: {
       type: String,
       required: true,
-      ref: 'User', // Reference to User model
+      ref: 'User',
     },
     sessionId: {
       type: String,
@@ -27,7 +29,7 @@ const ChatHistorySchema = new Schema<IChatHistory>(
     },
   },
   {
-    timestamps: true, // Adds createdAt and updatedAt
+    timestamps: true, 
   }
 );
 
@@ -36,4 +38,6 @@ ChatHistorySchema.index({ userId: 1, createdAt: -1 });
 
 const ChatHistory = models.ChatHistory || model<IChatHistory>("ChatHistory", ChatHistorySchema);
 
-export default ChatHistory;
+const ChatMessage = models.ChatMessage || model<IChatMessage>("ChatMessage", MessageSchema);
+
+export { ChatHistory, ChatMessage };

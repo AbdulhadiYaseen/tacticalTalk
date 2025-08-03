@@ -1,15 +1,45 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { handleUserMessage } from '../../lib/chatbot';
-import { IChatRequest, IChatResponse, MessageRole } from '@/types/chat';
+import { IChatRequest, IChatResponse, MessageRole, UUID } from '@/types/chat';
 import { getChatSessionsTitles } from '@/app/lib/chatModel';
+import dbConnect from '@/app/lib/mongoose';
 
 export async function POST(request: NextRequest) {
     try {
         console.log('API route called');
         
         
+        if (!process.env.OPEN_AI_API_KEY || process.env.OPEN_AI_API_KEY === 'sk-proj-1234567890') {
+            console.error('Invalid or missing OPEN_AI_API_KEY');
+            return NextResponse.json(
+                { error: 'AI service configuration error. Please contact support.' },
+                { status: 503 }
+            );
+        }
+
+        if (!process.env.MONGODB_URI) {
+            console.error('Missing MONGODB_URI');
+            return NextResponse.json(
+                { error: 'Database configuration error. Please contact support.' },
+                { status: 503 }
+            );
+        }
+
+        
+        try {
+            await dbConnect();
+            console.log('Database connection successful');
+        } catch (dbError) {
+            console.error('Database connection failed:', dbError);
+            return NextResponse.json(
+                { error: 'Database connection error. Please try again later.' },
+                { status: 503 }
+            );
+        }
+        
+        
         const body = await request.json();
-        console.log('Request body:', body);
+        console.log('Request body:', JSON.stringify(body, null, 2));
         
         if (!body.messages || !Array.isArray(body.messages)) {
             console.error('Invalid request: messages array missing or invalid');
@@ -19,7 +49,18 @@ export async function POST(request: NextRequest) {
             );
         }
         
-        const { messages } = body as IChatRequest;
+        const { messages, userId, sessionId, isNewSession } = body as IChatRequest & {
+            userId: string;
+            sessionId: string;
+            isNewSession?: boolean;
+        };
+
+        if (!userId || !sessionId) {
+            return NextResponse.json(
+                { error: 'Invalid request: userId and sessionId are required' },
+                { status: 400 }
+            );
+        }
         
         if (messages.length === 0) {
             console.error('Invalid request: messages array is empty');
@@ -40,13 +81,19 @@ export async function POST(request: NextRequest) {
         
         console.log('Processing message:', lastMessage.content);
         
+        // Call handleUserMessage
+        const response = await handleUserMessage(
+            lastMessage.content, 
+            userId, 
+            sessionId,
+            isNewSession
+        );
         
-        const response = await handleUserMessage(lastMessage.content);
         console.log('Bot response received:', response.substring(0, 100) + '...');
         
-        // Create the bot response with all required fields
+        // Create the bot response
         const botMessage = {
-            id: crypto.randomUUID(),           
+            id: crypto.randomUUID() as UUID,           
             role: 'bot' as MessageRole,        
             content: response,                 
             timestamp: new Date().toISOString()
@@ -60,11 +107,18 @@ export async function POST(request: NextRequest) {
     } catch (error) {
         console.error('Error in chat API:', error);
         
+        // Log the full error for debugging
+        if (error instanceof Error) {
+            console.error('Error name:', error.name);
+            console.error('Error message:', error.message);
+            console.error('Error stack:', error.stack);
+        }
         
         if (error instanceof Error) {
             
             if (error.message.includes('Authentication failed') || 
-                error.message.includes('PERMISSION_DENIED')) {
+                error.message.includes('PERMISSION_DENIED') ||
+                error.message.includes('Invalid API key')) {
                 return NextResponse.json(
                     { error: 'AI service authentication error. Please contact support.' },
                     { status: 503 }
@@ -87,6 +141,15 @@ export async function POST(request: NextRequest) {
                 return NextResponse.json(
                     { error: 'Network error. Please check your connection and try again.' },
                     { status: 502 }
+                );
+            }
+
+            // MongoDB specific errors
+            if (error.message.includes('MongoNetworkError') ||
+                error.message.includes('MongoServerSelectionError')) {
+                return NextResponse.json(
+                    { error: 'Database connection error. Please try again later.' },
+                    { status: 503 }
                 );
             }
         }

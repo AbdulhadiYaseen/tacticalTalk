@@ -30,6 +30,10 @@ export default function ChatWithBotPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<ChatSummary[]>([]);
   const [isLoadingResponse, setIsLoadingResponse] = useState(false);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [isNewSession, setIsNewSession] = useState(true);
+  const [loadingChat, setLoadingChat] = useState(false);
+
   const { isAuthenticated, isLoading: authLoading, user, redirectToLogin } = useAuth();
   const router = useRouter();
 
@@ -101,6 +105,64 @@ export default function ChatWithBotPage() {
     } finally {
       setChatsLoading(false);
     }
+  };
+
+  // Load chat session
+  const loadChatSession = async (sessionId: string) => {
+    if (loadingChat) return;
+    
+    setLoadingChat(true);
+    try {
+      const response = await fetch(`/api/chat/${sessionId}`);
+      if (response.ok) {
+        const chatSession = await response.json();
+        
+        // Convert chat msgs to frontend format
+        const convertedMessages = chatSession.messages.map((msg: IChatMessage) => ({
+          id: msg.id,
+          content: msg.content,
+          isBot: msg.role === 'bot',
+          timestamp: new Date(msg.timestamp)
+        }));
+
+        setMessages([
+          {
+            id: "initial-message",
+            content: "⚽ Hello! I'm your AI Football Tactics Coach. Ask me anything about formations, strategies, or tactical analysis!",
+            isBot: true,
+            timestamp: new Date()
+          },
+          ...convertedMessages
+        ]);
+        
+        setCurrentSessionId(sessionId);
+        setIsNewSession(false);
+        handleChatSelect(); 
+        
+        console.log(`Loaded chat session: ${sessionId} with ${convertedMessages.length} messages`);
+      } else {
+        console.error('Failed to load chat session:', response.statusText);
+      }
+    } catch (error) {
+      console.error('Error loading chat session:', error);
+    } finally {
+      setLoadingChat(false);
+    }
+  };
+
+  // Start a new chat session
+  const startNewChat = () => {
+    setMessages([
+      {
+        id: "initial-message",
+        content: "⚽ Hello! I'm your AI Football Tactics Coach. Ask me anything about formations, strategies, or tactical analysis!",
+        isBot: true,
+        timestamp: new Date()
+      }
+    ]);
+    setCurrentSessionId(null);
+    setIsNewSession(true);
+    console.log('Started new chat session');
   };
 
   // Check authentication on component mount
@@ -200,6 +262,13 @@ export default function ChatWithBotPage() {
   const sendMessage = async (message: string) => {
     if (!message.trim() || isLoadingResponse) return;
 
+    // Generate session ID if this is a new session
+    let sessionId = currentSessionId;
+    if (!sessionId) {
+      sessionId = crypto.randomUUID();
+      setCurrentSessionId(sessionId);
+    }
+
     // Add user message
     const userMessage = {
       id: crypto.randomUUID(),
@@ -213,22 +282,33 @@ export default function ChatWithBotPage() {
     setIsLoadingResponse(true);
 
     try {
-      // Convert messages to API format
+      // Convert messages to API format (exclude initial message)
       const allMessages = [...messages, userMessage];
-      const apiMessages: IChatMessage[] = allMessages.map(msg => ({
-        id: typeof msg.id === 'string' ? msg.id : String(msg.id),
-        role: msg.isBot ? 'bot' : 'user',
-        content: msg.content,
-        timestamp: msg.timestamp instanceof Date ? msg.timestamp.toISOString() : String(msg.timestamp)
-      }));
+      const apiMessages: IChatMessage[] = allMessages
+        .filter(msg => msg.id !== "initial-message")
+        .map(msg => ({
+          id: typeof msg.id === 'string'
+            ? (msg.id.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+                ? msg.id as `${string}-${string}-${string}-${string}-${string}`
+                : crypto.randomUUID() as `${string}-${string}-${string}-${string}-${string}`)
+            : String(msg.id) as `${string}-${string}-${string}-${string}-${string}`,
+          role: msg.isBot ? 'bot' : 'user',
+          content: msg.content,
+          timestamp: msg.timestamp instanceof Date ? msg.timestamp.toISOString() : String(msg.timestamp)
+        }));
 
-      // Make API call
+      // Make API call with session context
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ messages: apiMessages } as IChatRequest),
+        body: JSON.stringify({ 
+          messages: apiMessages,
+          userId: user?.id,
+          sessionId: sessionId,
+          isNewSession: isNewSession
+        } as IChatRequest),
       });
 
       if (!response.ok) {
@@ -245,6 +325,13 @@ export default function ChatWithBotPage() {
         timestamp: new Date(data.reply.timestamp)
       };
       setMessages(prev => [...prev, botResponse]);
+
+      // Update session state
+      if (isNewSession) {
+        setIsNewSession(false);
+        // Refresh chat list to show new session
+        fetchRecentChats();
+      }
 
     } catch (error) {
       console.error('Error sending message:', error);
@@ -275,7 +362,7 @@ export default function ChatWithBotPage() {
           {/* Sidebar Header */}
           <div className="p-4 border-b border-gray-700">
             <div className="flex items-center justify-between">
-              {!sidebarCollapsed && <h2 className="text-white font-semibold text-lg">Chat</h2>}
+              {!sidebarCollapsed && <h2 className="text-white font-semibold text-lg">Chat History</h2>}
               <div className="flex items-center space-x-2">
                 {/* Collapse/Expand Button */}
                 <button
@@ -306,7 +393,10 @@ export default function ChatWithBotPage() {
 
           {/* New Chat Button */}
           <div className="p-4">
-            <button className={`w-full flex items-center text-left p-3 rounded-lg border border-gray-600 text-gray-300 hover:bg-gray-800 transition-colors ${sidebarCollapsed ? 'justify-center' : 'space-x-3'}`}>
+            <button 
+              onClick={startNewChat}
+              className={`w-full flex items-center text-left p-3 rounded-lg border border-gray-600 text-gray-300 hover:bg-gray-800 transition-colors ${sidebarCollapsed ? 'justify-center' : 'space-x-3'}`}
+            >
               <svg className="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
               </svg>
@@ -381,49 +471,103 @@ export default function ChatWithBotPage() {
 
             {/* Chat History Section */}
             {!sidebarCollapsed && (
-              <div className="mt-6">
-                <h3 className="text-gray-400 text-sm font-medium mb-2 px-3">
-                  {isSearchMode ? 'Search Results' : ''}
-                </h3>
-                <div className="space-y-1">
+              <div className="flex-1 px-4 overflow-y-auto">
+                <div className="space-y-2">
                   {chatsLoading ? (
-                    <div className="px-3 py-2 text-gray-400 text-sm">Loading chats...</div>
-                  ) : isSearchMode ? (
-                    // Search mode results
-                    !searchQuery ? (
-                      <div className="px-3 py-2 text-gray-400 text-sm">Type to search chats</div>
-                    ) : searchResults.length === 0 ? (
-                      <div className="px-3 py-2 text-gray-400 text-sm">No chats found</div>
-                    ) : (
-                      searchResults.map((chat) => (
-                        <a 
-                          key={chat._id} 
-                          href="#" 
-                          onClick={handleChatSelect}
-                          className="block p-3 rounded-lg text-gray-300 hover:bg-gray-800 transition-colors text-sm truncate"
-                          title={chat.title}
-                        >
-                          {chat.title}
-                        </a>
-                      ))
-                    )
+                    <div className="px-3 py-4 text-gray-400 text-sm flex items-center justify-center">
+                      <div className="flex items-center space-x-2">
+                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-400"></div>
+                        <span>Loading chats...</span>
+                      </div>
+                    </div>
+                  ) : recentChats.length === 0 ? (
+                    <div className="px-3 py-6 text-gray-400 text-sm">
+                      <div className="text-center">
+                        <svg className="w-12 h-12 mx-auto mb-3 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                        </svg>
+                        <div className="text-gray-500 font-medium">No conversations yet</div>
+                        <div className="text-xs mt-1 text-gray-600">Start chatting to see your history!</div>
+                      </div>
+                    </div>
                   ) : (
-                    // Normal recent chats
-                    recentChats.length === 0 ? (
-                      <div className="px-3 py-2 text-gray-400 text-sm">No recent chats</div>
-                    ) : (
-                      recentChats.map((chat) => (
-                        <a 
-                          key={chat._id} 
-                          href="#" 
-                          onClick={handleChatSelect}
-                          className="block p-3 rounded-lg text-gray-300 hover:bg-gray-800 transition-colors text-sm truncate"
-                          title={chat.title}
-                        >
-                          {chat.title}
-                        </a>
-                      ))
-                    )
+                    <>
+                      {/* Chat List - Header removed */}
+                      <div className="space-y-1 pt-2">
+                        {recentChats.map((chat, index) => (
+                          <div key={chat._id} className="relative group">
+                            {/* Chat Item */}
+                            <button 
+                              onClick={() => loadChatSession(chat._id)}
+                              disabled={loadingChat}
+                              className={`block w-full text-left rounded-xl transition-all duration-200 text-sm relative overflow-hidden ${
+                                currentSessionId === chat._id 
+                                  ? 'bg-gradient-to-r from-blue-600/20 to-blue-500/10 text-white shadow-lg shadow-blue-500/10 border border-blue-500/30' 
+                                  : 'text-gray-300 hover:bg-gray-700/50 hover:text-white border border-transparent hover:border-gray-600/50'
+                              } ${loadingChat ? 'opacity-50 cursor-not-allowed' : 'hover:shadow-md'}`}
+                            >
+                              {/* Active indicator */}
+                              {currentSessionId === chat._id && (
+                                <div className="absolute left-0 top-0 bottom-0 w-1 bg-gradient-to-b from-blue-400 to-blue-600 rounded-r"></div>
+                              )}
+                              
+                              {/* Content */}
+                              <div className="flex items-center p-4">
+                                <div className={`flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center mr-3 ${
+                                  currentSessionId === chat._id 
+                                    ? 'bg-blue-500/20 text-blue-400' 
+                                    : 'bg-gray-700/50 text-gray-400 group-hover:bg-gray-600/50 group-hover:text-gray-300'
+                                }`}>
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                                  </svg>
+                                </div>
+                                
+                                <div className="flex-1 min-w-0">
+                                  <div className={`font-bold truncate mb-1 ${
+                                    currentSessionId === chat._id ? 'text-white' : 'text-gray-200 group-hover:text-white'
+                                  }`}>
+                                    {chat.title}
+                                  </div>
+                                  <div className={`text-xs truncate ${
+                                    currentSessionId === chat._id ? 'text-blue-200' : 'text-gray-500 group-hover:text-gray-400'
+                                  }`}>
+
+                                  </div>
+                                </div>
+
+                                {/* Loading indicator for individual chat */}
+                                {loadingChat && currentSessionId === chat._id && (
+                                  <div className="flex-shrink-0 ml-2">
+                                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-400"></div>
+                                  </div>
+                                )}
+
+                                {/* Active dot indicator */}
+                                {currentSessionId === chat._id && !loadingChat && (
+                                  <div className="flex-shrink-0 ml-2">
+                                    <div className="w-2 h-2 bg-blue-400 rounded-full animate-pulse"></div>
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* Hover effect overlay */}
+                              <div className="absolute inset-0 bg-gradient-to-r from-transparent to-blue-500/5 opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none"></div>
+                            </button>
+
+                            {/* Subtle separator line (except for last item) */}
+                            {index < recentChats.length - 1 && (
+                              <div className="ml-4 mr-4 mt-2 mb-1">
+                                <div className="h-px bg-gradient-to-r from-transparent via-gray-700/50 to-transparent"></div>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Bottom fade effect */}
+                      <div className="h-6 bg-gradient-to-t from-gray-800 to-transparent pointer-events-none"></div>
+                    </>
                   )}
                 </div>
               </div>
